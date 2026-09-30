@@ -105,30 +105,6 @@ cd ../frontend
 npm run build
 ```
 
-## Deployment
-
-### Backend on Render
-
-1. Create a Render Web Service from this repository, select Docker, and set its root directory to `backend`.
-2. Set the health-check path to `/health`. The included root-level `render.yaml` contains the same deployment configuration.
-3. Configure:
-   - `DATABASE_URL=sqlite:////app/data/zoom.db`
-   - `PUBLIC_FRONTEND_URL=https://<your-vercel-domain>`
-   - `FRONTEND_ORIGINS=https://<your-vercel-domain>`
-4. Deploy and copy the generated `onrender.com` service URL.
-
-SQLite requires a single backend replica. Render's free filesystem is ephemeral, so demo data can reset after a rebuild or service replacement. A paid persistent disk mounted at `/app/data` provides durable SQLite storage; horizontal scaling would require PostgreSQL instead.
-
-### Frontend on Vercel
-
-1. Import this repository and set the root directory to `/frontend`.
-2. Configure:
-   - `NEXT_PUBLIC_API_URL=https://<your-render-domain>`
-   - `NEXT_PUBLIC_WS_URL=wss://<your-render-domain>`
-3. Deploy and update the Render origin variables with the final Vercel domain.
-
-For reliable WebRTC behind restrictive networks, configure a TURN service using the optional `NEXT_PUBLIC_TURN_*` variables in `frontend/.env.example`.
-
 ## Assumptions
 
 - A seeded default user, Kavya Gupta, is considered logged in as required by the brief.

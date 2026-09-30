@@ -1,3 +1,4 @@
+import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -43,7 +44,11 @@ def find_meeting(db: Session, identifier: str) -> Meeting:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "realtime_events": True,
+        "revision": os.getenv("RENDER_GIT_COMMIT", "local")[:7],
+    }
 
 
 @app.get("/api/meetings", response_model=MeetingLists)
@@ -182,12 +187,13 @@ async def meeting_socket(websocket: WebSocket, meeting_id: str, participant_id: 
             elif message_type == "chat":
                 text = str(message.get("text", "")).strip()[:1000]
                 if text:
+                    client_id = str(message.get("clientId", "")).strip()[:100] or secrets.token_urlsafe(8)
                     await hub.broadcast(
                         meeting.meeting_id,
                         {
                             "type": "chat",
                             "message": {
-                                "id": secrets.token_urlsafe(8),
+                                "id": client_id,
                                 "participantId": participant_id,
                                 "name": client.name,
                                 "text": text,
@@ -200,7 +206,13 @@ async def meeting_socket(websocket: WebSocket, meeting_id: str, participant_id: 
                 if emoji in {"👏", "👍", "❤️", "😂", "🎉", "😮"}:
                     await hub.broadcast(
                         meeting.meeting_id,
-                        {"type": "reaction", "participantId": participant_id, "name": client.name, "emoji": emoji},
+                        {
+                            "type": "reaction",
+                            "id": str(message.get("clientId", "")).strip()[:100] or secrets.token_urlsafe(8),
+                            "participantId": participant_id,
+                            "name": client.name,
+                            "emoji": emoji,
+                        },
                     )
             elif message_type == "raise-hand":
                 client.raised_hand = bool(message.get("raised"))

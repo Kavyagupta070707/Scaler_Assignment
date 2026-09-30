@@ -29,7 +29,7 @@ function VideoTile({ participant, local = false }: { participant: Participant; l
 }
 
 type SharedScreen = { participantId: string; name: string; stream: MediaStream };
-type ChatMessage = { id: string; participantId: string; name: string; text: string; timestamp: string };
+type ChatMessage = { id: string; participantId: string; name: string; text: string; timestamp: string; pending?: boolean };
 type Reaction = { id: string; participantId: string; name: string; emoji: string };
 type Toast = { message: string; tone: "info" | "success" | "error" };
 
@@ -245,12 +245,16 @@ export default function MeetingPage() {
       });
     }
     if (message.type === "chat") {
-      setMessages(current => [...current, message.message]);
+      setMessages(current => {
+        const existing = current.findIndex(item => item.id === message.message.id);
+        if (existing < 0) return [...current, message.message];
+        return current.map((item, index) => index === existing ? { ...message.message, pending: false } : item);
+      });
       if (sidePanelRef.current !== "chat" && message.message.participantId !== joinedRef.current?.participantId) showToast(`New message from ${message.message.name}`, "info");
     }
     if (message.type === "reaction") {
-      const reaction = { ...message, id: `${message.participantId}-${Date.now()}-${Math.random()}` } as Reaction;
-      setReactions(current => [...current, reaction]);
+      const reaction = { ...message, id: message.id || `${message.participantId}-${Date.now()}-${Math.random()}` } as Reaction;
+      setReactions(current => current.some(item => item.id === reaction.id) ? current : [...current, reaction]);
       setTimeout(() => setReactions(current => current.filter(item => item.id !== reaction.id)), 3200);
     }
     if (message.type === "mute-request") {
@@ -370,19 +374,38 @@ export default function MeetingPage() {
     } catch { showToast("Screen sharing was cancelled", "info"); }
   }
   function sendSocket(payload: object) {
-    if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify(payload));
+    if (socketRef.current?.readyState !== WebSocket.OPEN) {
+      showToast("Still reconnecting. Please try again in a moment.", "error");
+      return false;
+    }
+    socketRef.current.send(JSON.stringify(payload));
+    return true;
   }
   function admitParticipant(participantId: string) { sendSocket({ type: "admit", target: participantId }); }
   function denyParticipant(participantId: string) { sendSocket({ type: "deny", target: participantId }); }
   function sendChat(event: React.FormEvent) {
     event.preventDefault();
     const text = chatInput.trim();
-    if (!text) return;
-    sendSocket({ type: "chat", text });
+    if (!text || !localParticipant) return;
+    const clientId = crypto.randomUUID();
+    if (!sendSocket({ type: "chat", text, clientId })) return;
+    setMessages(current => [...current, {
+      id: clientId,
+      participantId: localParticipant.id,
+      name: localParticipant.name,
+      text,
+      timestamp: new Date().toISOString(),
+      pending: true,
+    }]);
     setChatInput("");
   }
   function sendReaction(emoji: string) {
-    sendSocket({ type: "reaction", emoji });
+    if (!localParticipant) return;
+    const clientId = crypto.randomUUID();
+    if (!sendSocket({ type: "reaction", emoji, clientId })) return;
+    const reaction = { id: clientId, participantId: localParticipant.id, name: localParticipant.name, emoji };
+    setReactions(current => [...current, reaction]);
+    setTimeout(() => setReactions(current => current.filter(item => item.id !== clientId)), 3200);
     setShowReactions(false);
   }
   function toggleRaiseHand() {
@@ -490,7 +513,7 @@ export default function MeetingPage() {
             ) : sidePanel === "chat" ? (
               <div className="chat-panel">
                 <div className="chat-messages">{messages.length === 0 ? <div className="chat-empty"><MessageSquare /><strong>No messages yet</strong><span>Messages are visible to everyone in the meeting.</span></div> : messages.map(message => <div className={`chat-message ${message.participantId === localParticipant?.id ? "mine" : ""}`} key={message.id}><div><strong>{message.participantId === localParticipant?.id ? "You" : message.name}</strong><time>{new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div><p>{message.text}</p></div>)}</div>
-                <form className="chat-form" onSubmit={sendChat}><input aria-label="Chat message" maxLength={1000} placeholder="Type a message…" value={chatInput} onChange={event => setChatInput(event.target.value)} /><button title="Send message" aria-label="Send message" disabled={!chatInput.trim()}><Send /></button></form>
+                <form className="chat-form" onSubmit={sendChat}><input aria-label="Chat message" maxLength={1000} placeholder="Type a message…" value={chatInput} onChange={event => setChatInput(event.target.value)} /><button title="Send message" aria-label="Send message" disabled={!chatInput.trim() || connectionStatus !== "connected"}><Send /></button></form>
               </div>
             ) : (
               <div className="meeting-details">

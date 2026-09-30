@@ -63,6 +63,13 @@ def test_waiting_room_admission_and_chat():
                 guest_socket.send_json({"type": "chat", "text": "Hello from the waiting room"})
                 chat = receive_type(host_socket, "chat")
                 assert chat["message"]["text"] == "Hello from the waiting room"
+                assert receive_type(guest_socket, "chat")["message"]["text"] == "Hello from the waiting room"
+
+                guest_socket.send_json({"type": "reaction", "emoji": "👍", "clientId": "reaction-test"})
+                reaction = receive_type(host_socket, "reaction")
+                assert reaction["emoji"] == "👍"
+                assert reaction["id"] == "reaction-test"
+                assert receive_type(guest_socket, "reaction")["id"] == "reaction-test"
 
 
 def teardown_module():

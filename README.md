@@ -50,7 +50,7 @@ FastAPI is the source of truth for meetings and participants. WebSockets carry W
 | Backend | Python 3.12, FastAPI, Pydantic |
 | Data | SQLite, SQLAlchemy 2 |
 | Tests | Pytest, FastAPI TestClient |
-| Deployment | Vercel, Railway, Docker, GitHub Actions |
+| Deployment | Vercel, Render, Docker |
 
 ## Database schema
 
@@ -107,25 +107,25 @@ npm run build
 
 ## Deployment
 
-### Backend on Railway
+### Backend on Render
 
-1. Create a Railway service from this repository and set its root directory to `/backend`.
-2. Attach a persistent volume at `/app/data`.
+1. Create a Render Web Service from this repository, select Docker, and set its root directory to `backend`.
+2. Set the health-check path to `/health`. The included root-level `render.yaml` contains the same deployment configuration.
 3. Configure:
    - `DATABASE_URL=sqlite:////app/data/zoom.db`
    - `PUBLIC_FRONTEND_URL=https://<your-vercel-domain>`
    - `FRONTEND_ORIGINS=https://<your-vercel-domain>`
-4. Generate a public Railway domain.
+4. Deploy and copy the generated `onrender.com` service URL.
 
-SQLite requires a single backend replica. Horizontal scaling would require migrating the same SQLAlchemy models to PostgreSQL.
+SQLite requires a single backend replica. Render's free filesystem is ephemeral, so demo data can reset after a rebuild or service replacement. A paid persistent disk mounted at `/app/data` provides durable SQLite storage; horizontal scaling would require PostgreSQL instead.
 
 ### Frontend on Vercel
 
 1. Import this repository and set the root directory to `/frontend`.
 2. Configure:
-   - `NEXT_PUBLIC_API_URL=https://<your-railway-domain>`
-   - `NEXT_PUBLIC_WS_URL=wss://<your-railway-domain>`
-3. Deploy and update the Railway origin variables with the final Vercel domain.
+   - `NEXT_PUBLIC_API_URL=https://<your-render-domain>`
+   - `NEXT_PUBLIC_WS_URL=wss://<your-render-domain>`
+3. Deploy and update the Render origin variables with the final Vercel domain.
 
 For reliable WebRTC behind restrictive networks, configure a TURN service using the optional `NEXT_PUBLIC_TURN_*` variables in `frontend/.env.example`.
 
@@ -139,3 +139,16 @@ For reliable WebRTC behind restrictive networks, configure a TURN service using 
 ## Interview notes
 
 The main separation of concerns is deliberate: pages own workflow state, the API module owns HTTP behavior, FastAPI routes validate transport data, services own meeting creation rules, SQLAlchemy models own persistence, and the real-time hub owns ephemeral socket connections. This keeps stored business data separate from transient WebRTC signaling state.
+
+The meeting UI uses a reusable `MeetingControls` component for the responsive desktop toolbar and mobile More sheet, while the meeting page coordinates browser media, WebRTC peers, and real-time state. Client-generated event IDs make chat and reaction rendering immediate without duplicating the server-confirmed event.
+
+## Evaluation coverage
+
+| Criterion | Implementation evidence |
+| --- | --- |
+| Functionality | Instant, join-by-ID/link, scheduling, WebRTC media, screen sharing, chat, reactions, waiting room, reconnection and host moderation |
+| UI/UX | Zoom-inspired dashboard, pre-join preview, dark meeting canvas, bottom toolbar, right-side panels, presentation filmstrip and mobile More sheet |
+| Database design | Indexed meeting identifiers, unique invite/host tokens, user-meeting relationships, participant history and an event audit trail with SQLite foreign keys enabled |
+| Code quality | Typed API boundary, Pydantic validation, explicit error states, production builds and backend integration tests |
+| Modularity | Pages, reusable components, API client, schemas, persistence models, business services and the WebSocket hub are separated by responsibility |
+| Code understanding | Architecture, assumptions, data lifecycle, deployment limits and scaling tradeoffs are documented above |

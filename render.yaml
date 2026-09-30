@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: scaler-assignment-api
+    runtime: docker
+    plan: free
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:////app/data/zoom.db
+      - key: PUBLIC_FRONTEND_URL
+        value: https://scaler-assignment-psi.vercel.app
+      - key: FRONTEND_ORIGINS
+        value: https://scaler-assignment-psi.vercel.app

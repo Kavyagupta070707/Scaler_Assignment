@@ -221,7 +221,15 @@ async def meeting_socket(websocket: WebSocket, meeting_id: str, participant_id: 
                     {"type": "participant-update", "participant": hub.public(client)},
                 )
             elif message_type == "remove" and role == "host" and message.get("target"):
-                await hub.send_to(meeting.meeting_id, message["target"], {"type": "removed"})
+                target = str(message["target"])
+                with SessionLocal() as db:
+                    record = db.get(MeetingParticipant, target)
+                    if record and record.meeting_pk == meeting.id and record.role != "host":
+                        record.removed = True
+                        record.left_at = datetime.now(timezone.utc)
+                        db.add(MeetingEvent(meeting_pk=meeting.id, event_type="removed", participant_id=target))
+                        db.commit()
+                        await hub.send_to(meeting.meeting_id, target, {"type": "removed"})
             elif message_type == "mute-all" and role == "host":
                 await hub.broadcast(meeting.meeting_id, {"type": "mute-request"}, exclude=participant_id)
     except WebSocketDisconnect:

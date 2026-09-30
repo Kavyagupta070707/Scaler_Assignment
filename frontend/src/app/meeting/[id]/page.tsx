@@ -1,10 +1,11 @@
 "use client";
 
-import { Check, ChevronUp, Copy, Hand, Info, LoaderCircle, LogOut, MessageSquare, Mic, MicOff, MonitorUp, MoreHorizontal, PhoneOff, Send, ShieldCheck, Smile, UserCheck, UserX, Users, Video, VideoOff, Wifi, WifiOff, X } from "lucide-react";
+import { Check, Copy, Hand, Info, LoaderCircle, MessageSquare, Mic, MicOff, MonitorUp, Send, ShieldCheck, UserCheck, UserX, Users, Video, VideoOff, Wifi, WifiOff, X } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, formatMeetingId, WS_URL } from "@/lib/api";
 import { Meeting, Participant } from "@/lib/types";
+import MeetingControls from "@/components/meeting/MeetingControls";
 
 const iceServers: RTCIceServer[] = [
   { urls: process.env.NEXT_PUBLIC_STUN_URL || "stun:stun.l.google.com:19302" },
@@ -65,6 +66,7 @@ export default function MeetingPage() {
   const [muted, setMuted] = useState(false);
   const [videoOff, setVideoOff] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [shareOnJoin, setShareOnJoin] = useState(false);
   const [sharedScreen, setSharedScreen] = useState<SharedScreen | null>(null);
   const [copied, setCopied] = useState(false);
   const [sidePanel, setSidePanel] = useState<"participants" | "info" | "chat" | null>(null);
@@ -75,8 +77,6 @@ export default function MeetingPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [reactions, setReactions] = useState<Reaction[]>([]);
-  const [showReactions, setShowReactions] = useState(false);
-  const [showMobileMore, setShowMobileMore] = useState(false);
   const [raisedHand, setRaisedHand] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const localVideo = useRef<HTMLVideoElement>(null);
@@ -115,6 +115,7 @@ export default function MeetingPage() {
     async function prepare() {
       try {
         const found = await api.meeting(id); setMeeting(found);
+        setShareOnJoin(sessionStorage.getItem(`zoomly-share-${found.meeting_id}`) === "1");
         setName(sessionStorage.getItem(`zoomly-name-${found.meeting_id}`) || "Kavya Gupta");
         try {
           const media = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -313,11 +314,24 @@ export default function MeetingPage() {
     if (!meeting || name.trim().length < 2) return;
     setJoining(true); setError(""); setStage("connecting");
     try {
+      if (shareOnJoin && !screenStreamRef.current) {
+        try {
+          const display = await navigator.mediaDevices.getDisplayMedia({ video: true });
+          screenStreamRef.current = display;
+          sharingRef.current = true;
+          setSharing(true);
+          display.getVideoTracks()[0].onended = () => { void stopScreenShare(); };
+          sessionStorage.removeItem(`zoomly-share-${meeting.meeting_id}`);
+        } catch {
+          showToast("Screen sharing was cancelled. You can still join normally.", "info");
+        }
+      }
       const hostToken = localStorage.getItem(`zoomly-host-${meeting.meeting_id}`) || undefined;
       const joined = await api.join(meeting.meeting_id, name.trim(), hostToken);
       const local: Participant = { id: joined.participant_id, name: name.trim(), role: joined.role, muted, videoOff, stream: streamRef.current || undefined };
       joinedRef.current = { participantId: joined.participant_id, role: joined.role };
       setLocalParticipant(local);
+      if (screenStreamRef.current) setSharedScreen({ participantId: local.id, name: local.name, stream: screenStreamRef.current });
       intentionalCloseRef.current = false;
       connectSocket(meeting.meeting_id, joined.participant_id);
     } catch (err) {
@@ -407,8 +421,6 @@ export default function MeetingPage() {
     const reaction = { id: clientId, participantId: localParticipant.id, name: localParticipant.name, emoji };
     setReactions(current => [...current, reaction]);
     setTimeout(() => setReactions(current => current.filter(item => item.id !== clientId)), 3200);
-    setShowReactions(false);
-    setShowMobileMore(false);
   }
   function toggleRaiseHand() {
     const next = !raisedHand;
@@ -459,7 +471,7 @@ export default function MeetingPage() {
     </main>
   );
   if (stage === "preview") return (
-    <main className="preview-page"><header className="preview-header"><div className="brand"><span className="brand-mark"><Video size={22} fill="currentColor" /></span><span>zoomly</span></div><span>Meeting ID: {meeting && formatMeetingId(meeting.meeting_id)}</span></header><div className="preview-body"><section className="camera-preview"><video ref={localVideo} autoPlay muted playsInline className={videoOff ? "hidden" : ""} />{videoOff && <div className="preview-avatar">{name.split(" ").map(word => word[0]).join("").slice(0,2).toUpperCase()}</div>}<div className="preview-controls"><button className={muted ? "off" : ""} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}</button><button className={videoOff ? "off" : ""} onClick={toggleVideo}>{videoOff ? <VideoOff /> : <Video />}</button></div></section><section className="join-panel"><p className="eyebrow">READY TO JOIN?</p><h1>{meeting?.title}</h1><p>Set your name and choose how you&apos;ll appear in the meeting.</p><label><span>Your name</span><input value={name} onChange={event => setName(event.target.value)} maxLength={100} /></label>{error && <div className="alert error">{error}</div>}<button className="button primary full large" onClick={enterRoom} disabled={joining || name.trim().length < 2}>{joining && <LoaderCircle className="spin" />} Join meeting</button><div className="device-status"><span><Check /> Audio connected</span><span><Check /> Camera ready</span></div></section></div></main>
+    <main className="preview-page"><header className="preview-header"><div className="brand"><span className="brand-mark"><Video size={22} fill="currentColor" /></span><span>zoomly</span></div><span>Meeting ID: {meeting && formatMeetingId(meeting.meeting_id)}</span></header><div className="preview-body"><section className="camera-preview"><video ref={localVideo} autoPlay muted playsInline className={videoOff ? "hidden" : ""} />{videoOff && <div className="preview-avatar">{name.split(" ").map(word => word[0]).join("").slice(0,2).toUpperCase()}</div>}<div className="preview-controls"><button className={muted ? "off" : ""} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}</button><button className={videoOff ? "off" : ""} onClick={toggleVideo}>{videoOff ? <VideoOff /> : <Video />}</button></div></section><section className="join-panel"><p className="eyebrow">READY TO JOIN?</p><h1>{meeting?.title}</h1><p>{shareOnJoin ? "Your browser will ask which screen or window you want to present." : "Set your name and choose how you&apos;ll appear in the meeting."}</p><label><span>Your name</span><input value={name} onChange={event => setName(event.target.value)} maxLength={100} /></label>{error && <div className="alert error">{error}</div>}<button className="button primary full large" onClick={enterRoom} disabled={joining || name.trim().length < 2}>{joining && <LoaderCircle className="spin" />} {shareOnJoin ? "Join and share" : "Join meeting"}</button><div className="device-status"><span><Check /> Audio connected</span><span><Check /> Camera ready</span></div></section></div></main>
   );
 
   const allParticipants = localParticipant ? [localParticipant, ...participants] : participants;
@@ -527,41 +539,26 @@ export default function MeetingPage() {
           </aside>
         )}
       </section>
-      {showMobileMore && (
-        <>
-          <button className="mobile-more-backdrop" aria-label="Close more controls" onClick={() => { setShowMobileMore(false); setShowReactions(false); }} />
-          <section className="mobile-more-sheet" role="dialog" aria-modal="true" aria-label="More meeting controls">
-            <div className="mobile-more-heading"><strong>More</strong><button aria-label="Close more controls" onClick={() => { setShowMobileMore(false); setShowReactions(false); }}><X /></button></div>
-            <div className="mobile-more-grid">
-              <button onClick={() => { setSidePanel("chat"); setShowMobileMore(false); }}><span><MessageSquare /></span>Chat{messages.length > 0 && <b>{messages.length}</b>}</button>
-              <button onClick={() => setShowReactions(current => !current)}><span><Smile /></span>Reactions</button>
-              <button className={raisedHand ? "active" : ""} onClick={() => { toggleRaiseHand(); setShowMobileMore(false); }}><span><Hand /></span>{raisedHand ? "Lower Hand" : "Raise Hand"}</button>
-              <button className={sharing ? "active share" : ""} onClick={() => { void toggleShare(); setShowMobileMore(false); }}><span><MonitorUp /></span>{sharing ? "Stop Share" : "Share Screen"}</button>
-              <button onClick={() => { setSidePanel("info"); setShowMobileMore(false); }}><span><Info /></span>Meeting Info</button>
-            </div>
-            {showReactions && <div className="mobile-reaction-picker" aria-label="Choose a reaction">{["👏", "👍", "❤️", "😂", "🎉", "😮"].map(emoji => <button key={emoji} onClick={() => sendReaction(emoji)}>{emoji}</button>)}</div>}
-          </section>
-        </>
-      )}
-      <footer className="meeting-toolbar">
-        <div className="toolbar-group">
-          <button title="Mute/unmute (Alt+A)" className={muted ? "tool off" : "tool"} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}<span>{muted ? "Unmute" : "Mute"}</span></button>
-          <button className="chevron-tool"><ChevronUp /></button>
-          <button title="Start/stop video (Alt+V)" className={videoOff ? "tool off" : "tool"} onClick={toggleVideo}>{videoOff ? <VideoOff /> : <Video />}<span>{videoOff ? "Start Video" : "Stop Video"}</span></button>
-          <button className="chevron-tool"><ChevronUp /></button>
-        </div>
-        <div className="toolbar-group center">
-          <button title="View participants" className="tool" onClick={() => setSidePanel(sidePanel === "participants" ? null : "participants")}><Users /><span>Participants</span><b>{allParticipants.length + waitingParticipants.length}</b></button>
-          <button title="Open meeting chat" className="tool" onClick={() => setSidePanel(sidePanel === "chat" ? null : "chat")}><MessageSquare /><span>Chat</span>{messages.length > 0 && <b>{messages.length}</b>}</button>
-          <div className="reaction-menu-wrap"><button title="Send a reaction" className="tool" onClick={() => setShowReactions(current => !current)}><Smile /><span>Reactions</span></button>{showReactions && <div className="reaction-menu">{["👏", "👍", "❤️", "😂", "🎉", "😮"].map(emoji => <button key={emoji} onClick={() => sendReaction(emoji)}>{emoji}</button>)}</div>}</div>
-          <button title={raisedHand ? "Lower hand" : "Raise hand"} className={`tool ${raisedHand ? "active" : ""}`} onClick={toggleRaiseHand}><Hand /><span>{raisedHand ? "Lower Hand" : "Raise Hand"}</span></button>
-          <button title={sharing ? "Stop sharing" : "Share your screen"} className={`tool share ${sharing ? "active" : ""}`} onClick={toggleShare}><MonitorUp /><span>{sharing ? "Stop Share" : "Share"}</span></button>
-          <button title="More meeting controls" className={`tool mobile-more-trigger ${showMobileMore ? "active" : ""}`} onClick={() => setShowMobileMore(current => !current)}><MoreHorizontal /><span>More</span></button>
-        </div>
-        <div className="toolbar-group end">
-          {localParticipant?.role === "host" ? <button title="End meeting for everyone" className="end-button" onClick={endForAll}><PhoneOff /> End</button> : <button title="Leave meeting" className="end-button" onClick={leave}><LogOut /> Leave</button>}
-        </div>
-      </footer>
+      <MeetingControls
+        muted={muted}
+        videoOff={videoOff}
+        sharing={sharing}
+        raisedHand={raisedHand}
+        isHost={localParticipant?.role === "host"}
+        participantCount={allParticipants.length}
+        waitingCount={waitingParticipants.length}
+        messageCount={messages.length}
+        onToggleMute={toggleMute}
+        onToggleVideo={toggleVideo}
+        onToggleParticipants={() => setSidePanel(sidePanel === "participants" ? null : "participants")}
+        onToggleChat={() => setSidePanel(sidePanel === "chat" ? null : "chat")}
+        onToggleShare={() => { void toggleShare(); }}
+        onToggleHand={toggleRaiseHand}
+        onOpenInfo={() => setSidePanel("info")}
+        onReaction={sendReaction}
+        onLeave={leave}
+        onEnd={() => { void endForAll(); }}
+      />
     </main>
   );
 }

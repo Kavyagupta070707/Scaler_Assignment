@@ -22,6 +22,51 @@ def test_meeting_workflow():
         assert joined.json()["role"] == "guest"
 
 
+def test_scheduled_meeting_invite_and_lifecycle():
+    with TestClient(app) as client:
+        scheduled = client.post(
+            "/api/meetings/scheduled",
+            json={
+                "title": "Architecture review",
+                "description": "Review the proposed service boundaries",
+                "scheduled_at": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+                "duration_minutes": 45,
+                "timezone_name": "Asia/Kolkata",
+                "waiting_room": False,
+                "participants_video": True,
+            },
+        )
+        assert scheduled.status_code == 201
+        meeting = scheduled.json()
+        invite_token = meeting["invite_url"].split("meeting=")[-1]
+        assert client.get(f"/api/meetings/{invite_token}").json()["meeting_id"] == meeting["meeting_id"]
+
+        unauthorized = client.post(f"/api/meetings/{meeting['meeting_id']}/end?host_token=wrong")
+        assert unauthorized.status_code == 403
+        ended = client.post(
+            f"/api/meetings/{meeting['meeting_id']}/end?host_token={meeting['host_token']}"
+        )
+        assert ended.status_code == 204
+        rejected_join = client.post(
+            f"/api/meetings/{meeting['meeting_id']}/join", json={"display_name": "Late Guest"}
+        )
+        assert rejected_join.status_code == 410
+
+
+def test_schedule_rejects_past_dates_and_unknown_meetings():
+    with TestClient(app) as client:
+        invalid = client.post(
+            "/api/meetings/scheduled",
+            json={
+                "title": "Past meeting",
+                "scheduled_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+                "duration_minutes": 30,
+            },
+        )
+        assert invalid.status_code == 422
+        assert client.get("/api/meetings/00000000000").status_code == 404
+
+
 def receive_type(socket, expected: str) -> dict:
     for _ in range(8):
         message = socket.receive_json()

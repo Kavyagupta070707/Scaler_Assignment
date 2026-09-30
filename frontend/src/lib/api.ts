@@ -38,3 +38,16 @@ export function formatMeetingId(id: string) {
   return `${digits.slice(0, 3)} ${digits.slice(3, 7)} ${digits.slice(7)}`.trim();
 }
 
+export function meetingIdentifier(value: string) {
+  const trimmed = value.trim();
+  try {
+    const url = new URL(trimmed);
+    const queryValue = url.searchParams.get("meeting");
+    if (queryValue) return queryValue;
+    const roomMatch = url.pathname.match(/\/meeting\/([^/]+)/);
+    if (roomMatch) return decodeURIComponent(roomMatch[1]);
+  } catch {
+    // A plain meeting ID or invitation token is already a valid identifier.
+  }
+  return trimmed;
+}

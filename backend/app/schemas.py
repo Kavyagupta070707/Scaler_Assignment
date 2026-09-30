@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .models import MeetingStatus, MeetingType
 
@@ -13,6 +13,14 @@ class MeetingCreate(BaseModel):
     timezone_name: str = Field(default="Asia/Kolkata", max_length=80)
     waiting_room: bool = False
     participants_video: bool = True
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def scheduled_meeting_cannot_be_in_the_past(cls, value: datetime) -> datetime:
+        comparable = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if comparable < datetime.now(timezone.utc) - timedelta(minutes=1):
+            raise ValueError("Scheduled time must be in the future")
+        return value
 
 
 class MeetingUpdate(BaseModel):
@@ -54,4 +62,3 @@ class JoinResponse(BaseModel):
     participant_id: str
     role: str
     meeting: MeetingOut
-

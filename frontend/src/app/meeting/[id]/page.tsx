@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronUp, Copy, Info, LoaderCircle, LogOut, Mic, MicOff, MonitorUp, MoreHorizontal, PhoneOff, ShieldCheck, Smile, Users, Video, VideoOff, X } from "lucide-react";
+import { Check, ChevronUp, Copy, Hand, Info, LoaderCircle, LogOut, MessageSquare, Mic, MicOff, MonitorUp, PhoneOff, Send, ShieldCheck, Smile, UserCheck, UserX, Users, Video, VideoOff, Wifi, WifiOff, X } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, formatMeetingId, WS_URL } from "@/lib/api";
@@ -23,12 +23,15 @@ function VideoTile({ participant, local = false }: { participant: Participant; l
   return (
     <div className="video-tile">
       {participant.stream && !participant.videoOff ? <video ref={ref} autoPlay playsInline muted={local} /> : <div className="participant-avatar">{initials}</div>}
-      <div className="tile-label">{participant.muted ? <MicOff size={13} /> : <Mic size={13} />}{participant.name}{local ? " (You)" : ""}{participant.role === "host" && <ShieldCheck size={13} />}</div>
+      <div className="tile-label">{participant.muted ? <MicOff size={13} /> : <Mic size={13} />}{participant.name}{local ? " (You)" : ""}{participant.role === "host" && <ShieldCheck size={13} />}{participant.raisedHand && <Hand className="raised-hand" size={14} />}</div>
     </div>
   );
 }
 
 type SharedScreen = { participantId: string; name: string; stream: MediaStream };
+type ChatMessage = { id: string; participantId: string; name: string; text: string; timestamp: string };
+type Reaction = { id: string; participantId: string; name: string; emoji: string };
+type Toast = { message: string; tone: "info" | "success" | "error" };
 
 function ScreenStage({ screen }: { screen: SharedScreen }) {
   const ref = useRef<HTMLVideoElement>(null);
@@ -46,12 +49,17 @@ function ScreenStage({ screen }: { screen: SharedScreen }) {
   );
 }
 
+function ToastView({ toast }: { toast: Toast | null }) {
+  if (!toast) return null;
+  return <div className={`meeting-toast ${toast.tone}`} role="status">{toast.tone === "success" && <Check />}{toast.tone === "error" && <WifiOff />}{toast.message}</div>;
+}
+
 export default function MeetingPage() {
   const id = String(useParams().id);
   const router = useRouter();
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [name, setName] = useState("");
-  const [stage, setStage] = useState<"loading" | "preview" | "room" | "error">("loading");
+  const [stage, setStage] = useState<"loading" | "preview" | "connecting" | "waiting" | "room" | "error">("loading");
   const [error, setError] = useState("");
   const [joining, setJoining] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -59,9 +67,17 @@ export default function MeetingPage() {
   const [sharing, setSharing] = useState(false);
   const [sharedScreen, setSharedScreen] = useState<SharedScreen | null>(null);
   const [copied, setCopied] = useState(false);
-  const [sidePanel, setSidePanel] = useState<"participants" | "info" | null>(null);
+  const [sidePanel, setSidePanel] = useState<"participants" | "info" | "chat" | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [waitingParticipants, setWaitingParticipants] = useState<Participant[]>([]);
   const [localParticipant, setLocalParticipant] = useState<Participant | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<"idle" | "connecting" | "connected" | "reconnecting" | "disconnected">("idle");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [reactions, setReactions] = useState<Reaction[]>([]);
+  const [showReactions, setShowReactions] = useState(false);
+  const [raisedHand, setRaisedHand] = useState(false);
+  const [toast, setToast] = useState<Toast | null>(null);
   const localVideo = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
@@ -73,12 +89,26 @@ export default function MeetingPage() {
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const screenSendersRef = useRef<Map<string, RTCRtpSender>>(new Map());
   const participantsRef = useRef<Participant[]>([]);
+  const joinedRef = useRef<{ participantId: string; role: "host" | "guest" } | null>(null);
+  const intentionalCloseRef = useRef(false);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const keepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sidePanelRef = useRef<typeof sidePanel>(null);
 
   const updateParticipant = useCallback((updated: Participant) => {
     setParticipants(current => current.map(item => item.id === updated.id ? { ...item, ...updated } : item));
   }, []);
 
+  const showToast = useCallback((message: string, tone: Toast["tone"] = "info") => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ message, tone });
+    toastTimerRef.current = setTimeout(() => setToast(null), 2800);
+  }, []);
+
   useEffect(() => { participantsRef.current = participants; }, [participants]);
+  useEffect(() => { sidePanelRef.current = sidePanel; }, [sidePanel]);
 
   useEffect(() => {
     async function prepare() {
@@ -100,6 +130,10 @@ export default function MeetingPage() {
     }
     prepare();
     return () => {
+      intentionalCloseRef.current = true;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (keepAliveRef.current) clearInterval(keepAliveRef.current);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
       screenStreamRef.current?.getTracks().forEach(track => track.stop());
       streamRef.current?.getTracks().forEach(track => track.stop());
       socketRef.current?.close();
@@ -163,53 +197,128 @@ export default function MeetingPage() {
     }
   }
 
+  function closePeers() {
+    peersRef.current.forEach(peer => peer.close());
+    peersRef.current.clear();
+    screenSendersRef.current.clear();
+    participantsRef.current = [];
+    setParticipants([]);
+    setSharedScreen(current => current?.participantId === joinedRef.current?.participantId ? current : null);
+  }
+
+  async function enterActiveRoom(roomParticipants: Participant[]) {
+    participantsRef.current = roomParticipants;
+    setParticipants(roomParticipants);
+    setStage("room");
+    setJoining(false);
+    for (const participant of roomParticipants) await createPeer(participant.id, true);
+  }
+
+  async function handleSocketMessage(message: Record<string, any>, socket: WebSocket) {
+    if (message.type === "room-state" || message.type === "admitted") await enterActiveRoom(message.participants || []);
+    if (message.type === "waiting-room") { setStage("waiting"); setJoining(false); }
+    if (message.type === "waiting-room-state") setWaitingParticipants(message.participants || []);
+    if (message.type === "waiting-participant") {
+      setWaitingParticipants(current => [...current.filter(item => item.id !== message.participant.id), message.participant]);
+      showToast(`${message.participant.name} is waiting to join`, "info");
+    }
+    if (message.type === "waiting-participant-left") setWaitingParticipants(current => current.filter(item => item.id !== message.participantId));
+    if (message.type === "participant-joined") {
+      setParticipants(current => [...current.filter(item => item.id !== message.participant.id), message.participant]);
+      showToast(`${message.participant.name} joined`, "success");
+    }
+    if (message.type === "participant-left") {
+      setParticipants(current => current.filter(item => item.id !== message.participantId));
+      setSharedScreen(current => current?.participantId === message.participantId ? null : current);
+      peersRef.current.get(message.participantId)?.close();
+      peersRef.current.delete(message.participantId);
+      screenSendersRef.current.delete(message.participantId);
+    }
+    if (message.type === "signal") await handleSignal(message.from, message.data);
+    if (message.type === "media-state" || message.type === "participant-update") updateParticipant(message.participant);
+    if (message.type === "screen-share-state") {
+      setParticipants(current => current.map(item => item.id === message.participantId ? { ...item, sharing: message.sharing } : item));
+      if (!message.sharing) setSharedScreen(current => current?.participantId === message.participantId ? null : current);
+      else setSharedScreen(current => {
+        if (!current || current.participantId !== message.participantId) return current;
+        return { ...current, name: message.name };
+      });
+    }
+    if (message.type === "chat") {
+      setMessages(current => [...current, message.message]);
+      if (sidePanelRef.current !== "chat" && message.message.participantId !== joinedRef.current?.participantId) showToast(`New message from ${message.message.name}`, "info");
+    }
+    if (message.type === "reaction") {
+      const reaction = { ...message, id: `${message.participantId}-${Date.now()}-${Math.random()}` } as Reaction;
+      setReactions(current => [...current, reaction]);
+      setTimeout(() => setReactions(current => current.filter(item => item.id !== reaction.id)), 3200);
+    }
+    if (message.type === "mute-request") {
+      streamRef.current?.getAudioTracks().forEach(track => { track.enabled = false; });
+      mutedRef.current = true;
+      setMuted(true);
+      setLocalParticipant(current => current ? { ...current, muted: true } : current);
+      socket.send(JSON.stringify({ type: "media-state", muted: true, videoOff: videoOffRef.current }));
+      showToast("The host muted everyone", "info");
+    }
+    if (message.type === "denied") {
+      intentionalCloseRef.current = true;
+      setError("The host did not admit you to this meeting.");
+      setStage("error");
+      socket.close();
+    }
+    if (message.type === "removed" || message.type === "meeting-ended") {
+      intentionalCloseRef.current = true;
+      showToast(message.type === "removed" ? "The host removed you from the meeting" : "The host ended the meeting", "error");
+      setTimeout(leave, 1500);
+    }
+  }
+
+  function connectSocket(meetingId: string, participantId: string, reconnecting = false) {
+    setConnectionStatus(reconnecting ? "reconnecting" : "connecting");
+    const socket = new WebSocket(`${WS_URL}/ws/meetings/${meetingId}?participant_id=${participantId}`);
+    socketRef.current = socket;
+    socket.onopen = () => {
+      reconnectAttemptsRef.current = 0;
+      setConnectionStatus("connected");
+      socket.send(JSON.stringify({ type: "media-state", muted: mutedRef.current, videoOff: videoOffRef.current }));
+      if (sharingRef.current) socket.send(JSON.stringify({ type: "screen-share-state", sharing: true }));
+      if (keepAliveRef.current) clearInterval(keepAliveRef.current);
+      keepAliveRef.current = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "ping" }));
+      }, 20_000);
+      if (reconnecting) showToast("You are back online", "success");
+    };
+    socket.onmessage = event => { void handleSocketMessage(JSON.parse(event.data), socket); };
+    socket.onerror = () => socket.close();
+    socket.onclose = () => {
+      if (keepAliveRef.current) clearInterval(keepAliveRef.current);
+      if (intentionalCloseRef.current) return;
+      closePeers();
+      const attempt = reconnectAttemptsRef.current + 1;
+      reconnectAttemptsRef.current = attempt;
+      setConnectionStatus(attempt >= 5 ? "disconnected" : "reconnecting");
+      if (attempt === 1) showToast("Connection interrupted. Reconnecting…", "error");
+      const delay = Math.min(1000 * 2 ** (attempt - 1), 15_000);
+      reconnectTimerRef.current = setTimeout(() => connectSocket(meetingId, participantId, true), delay);
+    };
+  }
+
   async function enterRoom() {
     if (!meeting || name.trim().length < 2) return;
-    setJoining(true); setError("");
+    setJoining(true); setError(""); setStage("connecting");
     try {
       const hostToken = localStorage.getItem(`zoomly-host-${meeting.meeting_id}`) || undefined;
       const joined = await api.join(meeting.meeting_id, name.trim(), hostToken);
       const local: Participant = { id: joined.participant_id, name: name.trim(), role: joined.role, muted, videoOff, stream: streamRef.current || undefined };
-      setLocalParticipant(local); setStage("room");
-      const socket = new WebSocket(`${WS_URL}/ws/meetings/${meeting.meeting_id}?participant_id=${joined.participant_id}`);
-      socketRef.current = socket;
-      socket.onopen = () => socket.send(JSON.stringify({ type: "media-state", muted, videoOff }));
-      socket.onmessage = async event => {
-        const message = JSON.parse(event.data);
-        if (message.type === "room-state") {
-          participantsRef.current = message.participants;
-          setParticipants(message.participants);
-          for (const participant of message.participants) await createPeer(participant.id, true);
-        }
-        if (message.type === "participant-joined") setParticipants(current => [...current.filter(item => item.id !== message.participant.id), message.participant]);
-        if (message.type === "participant-left") {
-          setParticipants(current => current.filter(item => item.id !== message.participantId));
-          setSharedScreen(current => current?.participantId === message.participantId ? null : current);
-          peersRef.current.get(message.participantId)?.close();
-          peersRef.current.delete(message.participantId);
-          screenSendersRef.current.delete(message.participantId);
-        }
-        if (message.type === "signal") await handleSignal(message.from, message.data);
-        if (message.type === "media-state") updateParticipant(message.participant);
-        if (message.type === "screen-share-state") {
-          setParticipants(current => current.map(item => item.id === message.participantId ? { ...item, sharing: message.sharing } : item));
-          if (!message.sharing) setSharedScreen(current => current?.participantId === message.participantId ? null : current);
-          else setSharedScreen(current => {
-            if (!current || current.participantId !== message.participantId) return current;
-            return { ...current, name: message.name };
-          });
-        }
-        if (message.type === "mute-request") {
-          streamRef.current?.getAudioTracks().forEach(track => { track.enabled = false; });
-          mutedRef.current = true;
-          setMuted(true);
-          setLocalParticipant(current => current ? { ...current, muted: true } : current);
-          socket.send(JSON.stringify({ type: "media-state", muted: true, videoOff: videoOffRef.current }));
-        }
-        if (message.type === "removed") { alert("The host removed you from the meeting."); leave(); }
-        if (message.type === "meeting-ended") { alert("The host ended the meeting."); leave(); }
-      };
-    } catch (err) { setError(err instanceof Error ? err.message : "Unable to join"); setJoining(false); }
+      joinedRef.current = { participantId: joined.participant_id, role: joined.role };
+      setLocalParticipant(local);
+      intentionalCloseRef.current = false;
+      connectSocket(meeting.meeting_id, joined.participant_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to join");
+      setJoining(false); setStage("preview");
+    }
   }
 
   function publishMedia(nextMuted: boolean, nextVideoOff: boolean) {
@@ -258,14 +367,72 @@ export default function MeetingPage() {
       socketRef.current?.send(JSON.stringify({ type: "screen-share-state", sharing: true }));
       track.onended = () => { void stopScreenShare(); };
       setSharing(true);
-    } catch { /* user cancelled */ }
+    } catch { showToast("Screen sharing was cancelled", "info"); }
   }
-  function leave() { screenStreamRef.current?.getTracks().forEach(track => track.stop()); socketRef.current?.close(); streamRef.current?.getTracks().forEach(track => track.stop()); router.push("/"); }
-  async function endForAll() { if (!meeting) return; const token = localStorage.getItem(`zoomly-host-${meeting.meeting_id}`); if (token) await api.end(meeting.meeting_id, token); leave(); }
-  async function copyInvite() { if (!meeting) return; await navigator.clipboard.writeText(meeting.invite_url); setCopied(true); setTimeout(() => setCopied(false), 1800); }
+  function sendSocket(payload: object) {
+    if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify(payload));
+  }
+  function admitParticipant(participantId: string) { sendSocket({ type: "admit", target: participantId }); }
+  function denyParticipant(participantId: string) { sendSocket({ type: "deny", target: participantId }); }
+  function sendChat(event: React.FormEvent) {
+    event.preventDefault();
+    const text = chatInput.trim();
+    if (!text) return;
+    sendSocket({ type: "chat", text });
+    setChatInput("");
+  }
+  function sendReaction(emoji: string) {
+    sendSocket({ type: "reaction", emoji });
+    setShowReactions(false);
+  }
+  function toggleRaiseHand() {
+    const next = !raisedHand;
+    setRaisedHand(next);
+    setLocalParticipant(current => current ? { ...current, raisedHand: next } : current);
+    sendSocket({ type: "raise-hand", raised: next });
+    showToast(next ? "Your hand is raised" : "You lowered your hand", "info");
+  }
+  function leave() {
+    intentionalCloseRef.current = true;
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    if (keepAliveRef.current) clearInterval(keepAliveRef.current);
+    screenStreamRef.current?.getTracks().forEach(track => track.stop());
+    socketRef.current?.close();
+    streamRef.current?.getTracks().forEach(track => track.stop());
+    router.push("/");
+  }
+  async function endForAll() {
+    if (!meeting) return;
+    const token = localStorage.getItem(`zoomly-host-${meeting.meeting_id}`);
+    try { if (token) await api.end(meeting.meeting_id, token); leave(); }
+    catch { showToast("Unable to end the meeting. Please try again.", "error"); }
+  }
+  async function copyInvite() {
+    if (!meeting) return;
+    await navigator.clipboard.writeText(meeting.invite_url);
+    setCopied(true); showToast("Invitation copied", "success");
+    setTimeout(() => setCopied(false), 1800);
+  }
+
+  useEffect(() => {
+    function onShortcut(event: KeyboardEvent) {
+      if (stage !== "room" || event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.altKey && event.key.toLowerCase() === "a") { event.preventDefault(); toggleMute(); }
+      if (event.altKey && event.key.toLowerCase() === "v") { event.preventDefault(); toggleVideo(); }
+    }
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, [stage, muted, videoOff]);
 
   if (stage === "loading") return <div className="meeting-loading"><LoaderCircle className="spin" /><p>Preparing your meeting…</p></div>;
   if (stage === "error") return <div className="meeting-loading"><div className="error-orb"><X /></div><h1>Unable to join meeting</h1><p>{error}</p><button className="button primary" onClick={() => router.push("/")}>Return home</button></div>;
+  if (stage === "connecting") return <div className="meeting-loading dark"><LoaderCircle className="spin" /><h1>Joining {meeting?.title}</h1><p>Establishing a secure connection…</p><button className="button ghost" onClick={leave}>Cancel</button></div>;
+  if (stage === "waiting") return (
+    <main className="waiting-room-page">
+      <ToastView toast={toast} />
+      <div className="waiting-room-card"><div className="waiting-pulse"><Users /></div><p className="eyebrow">WAITING ROOM</p><h1>The host will let you in soon</h1><p>You&apos;re connected. Keep this window open and we&apos;ll join automatically when the host admits you.</p><div className="waiting-user"><span className="avatar">{name.split(" ").map(word => word[0]).join("").slice(0, 2)}</span><span><strong>{name}</strong><small><Wifi size={13} /> Connected</small></span></div><button className="button ghost" onClick={leave}>Leave waiting room</button></div>
+    </main>
+  );
   if (stage === "preview") return (
     <main className="preview-page"><header className="preview-header"><div className="brand"><span className="brand-mark"><Video size={22} fill="currentColor" /></span><span>zoomly</span></div><span>Meeting ID: {meeting && formatMeetingId(meeting.meeting_id)}</span></header><div className="preview-body"><section className="camera-preview"><video ref={localVideo} autoPlay muted playsInline className={videoOff ? "hidden" : ""} />{videoOff && <div className="preview-avatar">{name.split(" ").map(word => word[0]).join("").slice(0,2).toUpperCase()}</div>}<div className="preview-controls"><button className={muted ? "off" : ""} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}</button><button className={videoOff ? "off" : ""} onClick={toggleVideo}>{videoOff ? <VideoOff /> : <Video />}</button></div></section><section className="join-panel"><p className="eyebrow">READY TO JOIN?</p><h1>{meeting?.title}</h1><p>Set your name and choose how you&apos;ll appear in the meeting.</p><label><span>Your name</span><input value={name} onChange={event => setName(event.target.value)} maxLength={100} /></label>{error && <div className="alert error">{error}</div>}<button className="button primary full large" onClick={enterRoom} disabled={joining || name.trim().length < 2}>{joining && <LoaderCircle className="spin" />} Join meeting</button><div className="device-status"><span><Check /> Audio connected</span><span><Check /> Camera ready</span></div></section></div></main>
   );
@@ -273,6 +440,9 @@ export default function MeetingPage() {
   const allParticipants = localParticipant ? [localParticipant, ...participants] : participants;
   return (
     <main className="meeting-room">
+      <ToastView toast={toast} />
+      {connectionStatus !== "connected" && <div className={`connection-banner ${connectionStatus}`}><WifiOff />{connectionStatus === "disconnected" ? "Connection lost — still trying to reconnect" : "Reconnecting to the meeting…"}</div>}
+      <div className="reaction-layer" aria-live="polite">{reactions.map(reaction => <div className="floating-reaction" key={reaction.id}><span>{reaction.emoji}</span><small>{reaction.name}</small></div>)}</div>
       <header className="room-header">
         <button className="meeting-security"><ShieldCheck size={16} /></button>
         <span>{meeting?.title}</span>
@@ -294,11 +464,12 @@ export default function MeetingPage() {
         {sidePanel && (
           <aside className="room-panel">
             <div className="panel-heading">
-              <h2>{sidePanel === "participants" ? `Participants (${allParticipants.length})` : "Meeting information"}</h2>
-              <button onClick={() => setSidePanel(null)}><X /></button>
+              <h2>{sidePanel === "participants" ? `Participants (${allParticipants.length})` : sidePanel === "chat" ? "Meeting chat" : "Meeting information"}</h2>
+              <button title="Close panel" aria-label="Close panel" onClick={() => setSidePanel(null)}><X /></button>
             </div>
             {sidePanel === "participants" ? (
               <>
+                {localParticipant?.role === "host" && waitingParticipants.length > 0 && <div className="waiting-list"><h3>Waiting room ({waitingParticipants.length})</h3>{waitingParticipants.map(person => <div className="waiting-row" key={person.id}><span className="mini-avatar">{person.name[0]}</span><strong>{person.name}</strong><button title={`Admit ${person.name}`} onClick={() => admitParticipant(person.id)}><UserCheck /></button><button className="deny" title={`Deny ${person.name}`} onClick={() => denyParticipant(person.id)}><UserX /></button></div>)}</div>}
                 <div className="participant-list">
                   {allParticipants.map(person => (
                     <div className="participant-row" key={person.id}>
@@ -306,16 +477,21 @@ export default function MeetingPage() {
                       <span><strong>{person.name}{person.id === localParticipant?.id ? " (You)" : ""}</strong><small>{person.role === "host" ? "Host" : "Participant"}</small></span>
                       <span>
                         {person.muted ? <MicOff /> : <Mic />}
-                        {person.videoOff ? <VideoOff /> : <Video />}
+                        {person.videoOff ? <VideoOff /> : <Video />}{person.raisedHand && <Hand className="raised-hand" />}
                         {localParticipant?.role === "host" && person.role !== "host" && (
-                          <button onClick={() => socketRef.current?.send(JSON.stringify({ type: "remove", target: person.id }))}><X /></button>
+                          <button title={`Remove ${person.name}`} onClick={() => sendSocket({ type: "remove", target: person.id })}><X /></button>
                         )}
                       </span>
                     </div>
                   ))}
                 </div>
-                {localParticipant?.role === "host" && <button className="button ghost full" onClick={() => socketRef.current?.send(JSON.stringify({ type: "mute-all" }))}>Mute all</button>}
+                {localParticipant?.role === "host" && <button className="button ghost full" onClick={() => sendSocket({ type: "mute-all" })}>Mute all</button>}
               </>
+            ) : sidePanel === "chat" ? (
+              <div className="chat-panel">
+                <div className="chat-messages">{messages.length === 0 ? <div className="chat-empty"><MessageSquare /><strong>No messages yet</strong><span>Messages are visible to everyone in the meeting.</span></div> : messages.map(message => <div className={`chat-message ${message.participantId === localParticipant?.id ? "mine" : ""}`} key={message.id}><div><strong>{message.participantId === localParticipant?.id ? "You" : message.name}</strong><time>{new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div><p>{message.text}</p></div>)}</div>
+                <form className="chat-form" onSubmit={sendChat}><input aria-label="Chat message" maxLength={1000} placeholder="Type a message…" value={chatInput} onChange={event => setChatInput(event.target.value)} /><button title="Send message" aria-label="Send message" disabled={!chatInput.trim()}><Send /></button></form>
+              </div>
             ) : (
               <div className="meeting-details">
                 <label>Topic<strong>{meeting?.title}</strong></label>
@@ -328,19 +504,20 @@ export default function MeetingPage() {
       </section>
       <footer className="meeting-toolbar">
         <div className="toolbar-group">
-          <button className={muted ? "tool off" : "tool"} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}<span>{muted ? "Unmute" : "Mute"}</span></button>
+          <button title="Mute/unmute (Alt+A)" className={muted ? "tool off" : "tool"} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}<span>{muted ? "Unmute" : "Mute"}</span></button>
           <button className="chevron-tool"><ChevronUp /></button>
-          <button className={videoOff ? "tool off" : "tool"} onClick={toggleVideo}>{videoOff ? <VideoOff /> : <Video />}<span>{videoOff ? "Start Video" : "Stop Video"}</span></button>
+          <button title="Start/stop video (Alt+V)" className={videoOff ? "tool off" : "tool"} onClick={toggleVideo}>{videoOff ? <VideoOff /> : <Video />}<span>{videoOff ? "Start Video" : "Stop Video"}</span></button>
           <button className="chevron-tool"><ChevronUp /></button>
         </div>
         <div className="toolbar-group center">
-          <button className="tool" onClick={() => setSidePanel(sidePanel === "participants" ? null : "participants")}><Users /><span>Participants</span><b>{allParticipants.length}</b></button>
-          <button className="tool"><Smile /><span>Reactions</span></button>
-          <button className={`tool share ${sharing ? "active" : ""}`} onClick={toggleShare}><MonitorUp /><span>{sharing ? "Stop Share" : "Share"}</span></button>
-          <button className="tool"><MoreHorizontal /><span>More</span></button>
+          <button title="View participants" className="tool" onClick={() => setSidePanel(sidePanel === "participants" ? null : "participants")}><Users /><span>Participants</span><b>{allParticipants.length + waitingParticipants.length}</b></button>
+          <button title="Open meeting chat" className="tool" onClick={() => setSidePanel(sidePanel === "chat" ? null : "chat")}><MessageSquare /><span>Chat</span>{messages.length > 0 && <b>{messages.length}</b>}</button>
+          <div className="reaction-menu-wrap"><button title="Send a reaction" className="tool" onClick={() => setShowReactions(current => !current)}><Smile /><span>Reactions</span></button>{showReactions && <div className="reaction-menu">{["👏", "👍", "❤️", "😂", "🎉", "😮"].map(emoji => <button key={emoji} onClick={() => sendReaction(emoji)}>{emoji}</button>)}</div>}</div>
+          <button title={raisedHand ? "Lower hand" : "Raise hand"} className={`tool ${raisedHand ? "active" : ""}`} onClick={toggleRaiseHand}><Hand /><span>{raisedHand ? "Lower Hand" : "Raise Hand"}</span></button>
+          <button title={sharing ? "Stop sharing" : "Share your screen"} className={`tool share ${sharing ? "active" : ""}`} onClick={toggleShare}><MonitorUp /><span>{sharing ? "Stop Share" : "Share"}</span></button>
         </div>
         <div className="toolbar-group end">
-          {localParticipant?.role === "host" ? <button className="end-button" onClick={endForAll}><PhoneOff /> End</button> : <button className="end-button" onClick={leave}><LogOut /> Leave</button>}
+          {localParticipant?.role === "host" ? <button title="End meeting for everyone" className="end-button" onClick={endForAll}><PhoneOff /> End</button> : <button title="Leave meeting" className="end-button" onClick={leave}><LogOut /> Leave</button>}
         </div>
       </footer>
     </main>

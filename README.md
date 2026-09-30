@@ -6,8 +6,9 @@ A full-stack Zoom-inspired meeting platform created for the Scaler SDE assignmen
 
 ## Live application
 
-- Frontend: added after deployment
-- API documentation: added after deployment
+- Frontend: https://scaler-assignment-psi.vercel.app
+- Backend health: https://scaler-assignment-gkuc.onrender.com/health
+- API documentation: https://scaler-assignment-gkuc.onrender.com/docs
 
 ## Features
 
@@ -21,6 +22,10 @@ A full-stack Zoom-inspired meeting platform created for the Scaler SDE assignmen
 - Mute, camera and screen-share controls
 - Real-time participant presence through WebSockets
 - Host mute-all, remove-participant and end-for-all controls
+- Host-controlled waiting room with admit and deny actions
+- In-meeting chat, emoji reactions and raise-hand state
+- Automatic WebSocket reconnection with visible connection status
+- Keyboard shortcuts, toast feedback, tooltips and loading skeletons
 - Seeded sample meetings and automatic database setup
 - API validation and useful meeting error states
 
@@ -128,7 +133,7 @@ For reliable WebRTC behind restrictive networks, configure a TURN service using 
 
 - A seeded default user, Kavya Gupta, is considered logged in as required by the brief.
 - Host credentials are stored only in the creator's browser. Public invite links do not expose host privileges.
-- Waiting-room preference is persisted for forward compatibility; the current version admits participants immediately.
+- Waiting-room admission state is held by the live meeting server; guests must be admitted by the host when the option is enabled.
 - Browser camera/screen APIs require HTTPS in deployment or localhost during development.
 
 ## Interview notes

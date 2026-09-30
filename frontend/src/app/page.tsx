@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarPlus, ChevronRight, Clock3, Copy, Link2, LoaderCircle, Plus, Users, Video } from "lucide-react";
+import { CalendarPlus, Check, ChevronRight, Clock3, Copy, Link2, LoaderCircle, Plus, Users, Video } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
@@ -10,8 +10,11 @@ import { Meeting } from "@/lib/types";
 function MeetingRow({ meeting, recent = false, onCancel }: { meeting: Meeting; recent?: boolean; onCancel?: () => void }) {
   const date = new Date(meeting.scheduled_at);
   const startLink = `/meeting/${meeting.meeting_id}`;
+  const [copied, setCopied] = useState(false);
   async function copyInvite() {
     await navigator.clipboard.writeText(meeting.invite_url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
   }
   return (
     <article className="meeting-row">
@@ -26,7 +29,7 @@ function MeetingRow({ meeting, recent = false, onCancel }: { meeting: Meeting; r
       </div>
       <div className="meeting-actions">
         {!recent && <Link href={startLink} onClick={() => saveHostToken(meeting)} className="button primary small">Start</Link>}
-        <button className="button ghost small" onClick={copyInvite}><Copy size={15} /> Copy invite</button>
+        <button title="Copy invitation link" className="button ghost small" onClick={copyInvite}>{copied ? <Check size={15} /> : <Copy size={15} />} {copied ? "Copied" : "Copy invite"}</button>
         {!recent && onCancel && <button className="text-button danger-text" onClick={onCancel}>Cancel</button>}
       </div>
     </article>
@@ -73,7 +76,7 @@ export default function HomePage() {
       {error && <div className="alert error">{error}</div>}
       <section className="hero-grid">
         <div className="quick-actions">
-          <button className="action-card orange" onClick={newMeeting} disabled={creating}><span className="action-icon">{creating ? <LoaderCircle className="spin" /> : <Video fill="currentColor" />}</span><span><strong>New Meeting</strong><small>Start an instant meeting</small></span><ChevronRight /></button>
+          <button title="Start a new meeting now" className="action-card orange" onClick={newMeeting} disabled={creating}><span className="action-icon">{creating ? <LoaderCircle className="spin" /> : <Video fill="currentColor" />}</span><span><strong>New Meeting</strong><small>Start an instant meeting</small></span><ChevronRight /></button>
           <Link className="action-card blue" href="/join"><span className="action-icon"><Plus /></span><span><strong>Join</strong><small>Enter a meeting ID</small></span><ChevronRight /></Link>
           <Link className="action-card purple" href="/schedule"><span className="action-icon"><CalendarPlus /></span><span><strong>Schedule</strong><small>Plan a meeting</small></span><ChevronRight /></Link>
           <button className="action-card cyan" onClick={() => navigator.clipboard.writeText(window.location.origin)}><span className="action-icon"><Link2 /></span><span><strong>Share screen</strong><small>Present using a key</small></span><ChevronRight /></button>
@@ -82,7 +85,7 @@ export default function HomePage() {
       </section>
       <section className="content-card">
         <div className="section-title"><div><h2>Upcoming meetings</h2><p>Your scheduled meetings and events</p></div><Link href="/schedule" className="button primary"><Plus size={17} /> Schedule meeting</Link></div>
-        {loading ? <div className="empty-state"><LoaderCircle className="spin" /><p>Loading your meetings…</p></div> : data.upcoming.length ? data.upcoming.map(meeting => <MeetingRow meeting={meeting} key={meeting.meeting_id} onCancel={() => cancelMeeting(meeting.meeting_id)} />) : <div className="empty-state"><CalendarPlus /><h3>No upcoming meetings</h3><p>Schedule a meeting to see it here.</p></div>}
+        {loading ? <div className="meeting-skeleton" aria-label="Loading meetings">{[1,2].map(item => <div className="skeleton-row" key={item}><i/><span><b/><b/></span><em/></div>)}</div> : data.upcoming.length ? data.upcoming.map(meeting => <MeetingRow meeting={meeting} key={meeting.meeting_id} onCancel={() => cancelMeeting(meeting.meeting_id)} />) : <div className="empty-state"><CalendarPlus /><h3>No upcoming meetings</h3><p>Schedule a meeting to see it here.</p></div>}
       </section>
       <section className="content-card recent-card">
         <div className="section-title"><div><h2>Recent</h2><p>Meetings you joined recently</p></div><button className="text-button">View all</button></div>

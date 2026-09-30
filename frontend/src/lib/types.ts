@@ -20,5 +20,6 @@ export type Participant = {
   muted: boolean;
   videoOff: boolean;
   sharing?: boolean;
+  raisedHand?: boolean;
   stream?: MediaStream;
 };

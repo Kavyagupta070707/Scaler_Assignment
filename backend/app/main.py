@@ -1,3 +1,4 @@
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -136,17 +137,31 @@ async def meeting_socket(websocket: WebSocket, meeting_id: str, participant_id: 
         if not meeting or not participant or participant.meeting_pk != meeting.id:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
-        name, role = participant.display_name, participant.role
+        name, role, waiting_room = participant.display_name, participant.role, meeting.waiting_room
 
     await websocket.accept()
     client = Client(websocket=websocket, participant_id=participant_id, name=name, role=role)
-    existing = await hub.connect(meeting.meeting_id, client)
-    await websocket.send_json({"type": "room-state", "participants": existing})
+    if hub.should_wait(meeting.meeting_id, participant_id, waiting_room, role):
+        await hub.queue(meeting.meeting_id, client)
+    else:
+        existing = await hub.connect(meeting.meeting_id, client)
+        await websocket.send_json({"type": "room-state", "participants": existing})
+        if role == "host":
+            await websocket.send_json({"type": "waiting-room-state", "participants": hub.waiting_list(meeting.meeting_id)})
     try:
         while True:
             message = await websocket.receive_json()
             message_type = message.get("type")
-            if message_type == "signal" and message.get("target"):
+            is_active = hub.is_active(meeting.meeting_id, participant_id)
+            if message_type == "ping":
+                await websocket.send_json({"type": "pong"})
+            elif message_type == "admit" and role == "host" and message.get("target"):
+                await hub.admit(meeting.meeting_id, message["target"])
+            elif message_type == "deny" and role == "host" and message.get("target"):
+                await hub.deny(meeting.meeting_id, message["target"])
+            elif not is_active:
+                continue
+            elif message_type == "signal" and message.get("target"):
                 await hub.send_to(meeting.meeting_id, message["target"], {"type": "signal", "from": participant_id, "data": message.get("data")})
             elif message_type == "media-state":
                 client.muted = bool(message.get("muted"))
@@ -164,15 +179,45 @@ async def meeting_socket(websocket: WebSocket, meeting_id: str, participant_id: 
                     },
                     exclude=participant_id,
                 )
+            elif message_type == "chat":
+                text = str(message.get("text", "")).strip()[:1000]
+                if text:
+                    await hub.broadcast(
+                        meeting.meeting_id,
+                        {
+                            "type": "chat",
+                            "message": {
+                                "id": secrets.token_urlsafe(8),
+                                "participantId": participant_id,
+                                "name": client.name,
+                                "text": text,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                        },
+                    )
+            elif message_type == "reaction":
+                emoji = str(message.get("emoji", ""))
+                if emoji in {"👏", "👍", "❤️", "😂", "🎉", "😮"}:
+                    await hub.broadcast(
+                        meeting.meeting_id,
+                        {"type": "reaction", "participantId": participant_id, "name": client.name, "emoji": emoji},
+                    )
+            elif message_type == "raise-hand":
+                client.raised_hand = bool(message.get("raised"))
+                await hub.broadcast(
+                    meeting.meeting_id,
+                    {"type": "participant-update", "participant": hub.public(client)},
+                )
             elif message_type == "remove" and role == "host" and message.get("target"):
                 await hub.send_to(meeting.meeting_id, message["target"], {"type": "removed"})
             elif message_type == "mute-all" and role == "host":
                 await hub.broadcast(meeting.meeting_id, {"type": "mute-request"}, exclude=participant_id)
     except WebSocketDisconnect:
-        with SessionLocal() as db:
-            record = db.get(MeetingParticipant, participant_id)
-            if record:
-                record.left_at = datetime.now(timezone.utc)
-                db.add(MeetingEvent(meeting_pk=record.meeting_pk, event_type="left", participant_id=participant_id))
-                db.commit()
-        await hub.disconnect(meeting.meeting_id, participant_id)
+        was_active = await hub.disconnect(meeting.meeting_id, participant_id, websocket)
+        if was_active:
+            with SessionLocal() as db:
+                record = db.get(MeetingParticipant, participant_id)
+                if record:
+                    record.left_at = datetime.now(timezone.utc)
+                    db.add(MeetingEvent(meeting_pk=record.meeting_pk, event_type="left", participant_id=participant_id))
+                    db.commit()

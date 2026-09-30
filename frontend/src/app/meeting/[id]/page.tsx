@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronUp, Copy, Hand, Info, LoaderCircle, LogOut, MessageSquare, Mic, MicOff, MonitorUp, PhoneOff, Send, ShieldCheck, Smile, UserCheck, UserX, Users, Video, VideoOff, Wifi, WifiOff, X } from "lucide-react";
+import { Check, ChevronUp, Copy, Hand, Info, LoaderCircle, LogOut, MessageSquare, Mic, MicOff, MonitorUp, MoreHorizontal, PhoneOff, Send, ShieldCheck, Smile, UserCheck, UserX, Users, Video, VideoOff, Wifi, WifiOff, X } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, formatMeetingId, WS_URL } from "@/lib/api";
@@ -76,6 +76,7 @@ export default function MeetingPage() {
   const [chatInput, setChatInput] = useState("");
   const [reactions, setReactions] = useState<Reaction[]>([]);
   const [showReactions, setShowReactions] = useState(false);
+  const [showMobileMore, setShowMobileMore] = useState(false);
   const [raisedHand, setRaisedHand] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const localVideo = useRef<HTMLVideoElement>(null);
@@ -407,6 +408,7 @@ export default function MeetingPage() {
     setReactions(current => [...current, reaction]);
     setTimeout(() => setReactions(current => current.filter(item => item.id !== clientId)), 3200);
     setShowReactions(false);
+    setShowMobileMore(false);
   }
   function toggleRaiseHand() {
     const next = !raisedHand;
@@ -525,6 +527,22 @@ export default function MeetingPage() {
           </aside>
         )}
       </section>
+      {showMobileMore && (
+        <>
+          <button className="mobile-more-backdrop" aria-label="Close more controls" onClick={() => { setShowMobileMore(false); setShowReactions(false); }} />
+          <section className="mobile-more-sheet" role="dialog" aria-modal="true" aria-label="More meeting controls">
+            <div className="mobile-more-heading"><strong>More</strong><button aria-label="Close more controls" onClick={() => { setShowMobileMore(false); setShowReactions(false); }}><X /></button></div>
+            <div className="mobile-more-grid">
+              <button onClick={() => { setSidePanel("chat"); setShowMobileMore(false); }}><span><MessageSquare /></span>Chat{messages.length > 0 && <b>{messages.length}</b>}</button>
+              <button onClick={() => setShowReactions(current => !current)}><span><Smile /></span>Reactions</button>
+              <button className={raisedHand ? "active" : ""} onClick={() => { toggleRaiseHand(); setShowMobileMore(false); }}><span><Hand /></span>{raisedHand ? "Lower Hand" : "Raise Hand"}</button>
+              <button className={sharing ? "active share" : ""} onClick={() => { void toggleShare(); setShowMobileMore(false); }}><span><MonitorUp /></span>{sharing ? "Stop Share" : "Share Screen"}</button>
+              <button onClick={() => { setSidePanel("info"); setShowMobileMore(false); }}><span><Info /></span>Meeting Info</button>
+            </div>
+            {showReactions && <div className="mobile-reaction-picker" aria-label="Choose a reaction">{["👏", "👍", "❤️", "😂", "🎉", "😮"].map(emoji => <button key={emoji} onClick={() => sendReaction(emoji)}>{emoji}</button>)}</div>}
+          </section>
+        </>
+      )}
       <footer className="meeting-toolbar">
         <div className="toolbar-group">
           <button title="Mute/unmute (Alt+A)" className={muted ? "tool off" : "tool"} onClick={toggleMute}>{muted ? <MicOff /> : <Mic />}<span>{muted ? "Unmute" : "Mute"}</span></button>
@@ -538,6 +556,7 @@ export default function MeetingPage() {
           <div className="reaction-menu-wrap"><button title="Send a reaction" className="tool" onClick={() => setShowReactions(current => !current)}><Smile /><span>Reactions</span></button>{showReactions && <div className="reaction-menu">{["👏", "👍", "❤️", "😂", "🎉", "😮"].map(emoji => <button key={emoji} onClick={() => sendReaction(emoji)}>{emoji}</button>)}</div>}</div>
           <button title={raisedHand ? "Lower hand" : "Raise hand"} className={`tool ${raisedHand ? "active" : ""}`} onClick={toggleRaiseHand}><Hand /><span>{raisedHand ? "Lower Hand" : "Raise Hand"}</span></button>
           <button title={sharing ? "Stop sharing" : "Share your screen"} className={`tool share ${sharing ? "active" : ""}`} onClick={toggleShare}><MonitorUp /><span>{sharing ? "Stop Share" : "Share"}</span></button>
+          <button title="More meeting controls" className={`tool mobile-more-trigger ${showMobileMore ? "active" : ""}`} onClick={() => setShowMobileMore(current => !current)}><MoreHorizontal /><span>More</span></button>
         </div>
         <div className="toolbar-group end">
           {localParticipant?.role === "host" ? <button title="End meeting for everyone" className="end-button" onClick={endForAll}><PhoneOff /> End</button> : <button title="Leave meeting" className="end-button" onClick={leave}><LogOut /> Leave</button>}

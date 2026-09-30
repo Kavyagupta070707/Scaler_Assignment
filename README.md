@@ -1,0 +1,136 @@
+# Zoomly — Video Conferencing Platform
+
+A full-stack Zoom-inspired meeting platform created for the Scaler SDE assignment. It supports instant and scheduled meetings, invitation links, browser-based audio/video, screen sharing, live participant state, and host moderation.
+
+> Zoomly is an original educational project. It is not affiliated with or endorsed by Zoom Video Communications, Inc.
+
+## Live application
+
+- Frontend: added after deployment
+- API documentation: added after deployment
+
+## Features
+
+- Professional, responsive meeting dashboard
+- Instant meetings with unique 11-digit IDs
+- Scheduled meetings with topic, description, date, duration and timezone
+- Upcoming and recent meeting lists backed by SQLite
+- Join by meeting ID or shareable invitation link
+- Pre-join camera/microphone preview and display name
+- Multi-participant WebRTC video rooms
+- Mute, camera and screen-share controls
+- Real-time participant presence through WebSockets
+- Host mute-all, remove-participant and end-for-all controls
+- Seeded sample meetings and automatic database setup
+- API validation and useful meeting error states
+
+## Architecture
+
+```text
+Next.js client ── REST ───────┐
+                             ├── FastAPI ── SQLAlchemy ── SQLite
+Next.js client ── WebSocket ─┘
+       │
+       └──── WebRTC peer-to-peer media ──── Other clients
+```
+
+FastAPI is the source of truth for meetings and participants. WebSockets carry WebRTC negotiation messages and live room events; video and audio travel directly between browsers. The peer mesh is intentionally designed for small assignment/demo rooms (approximately 2–6 people). A larger production system should use an SFU such as LiveKit or mediasoup.
+
+## Tech stack
+
+| Layer | Technology |
+| --- | --- |
+| Frontend | Next.js 16, React 19, TypeScript, Lucide |
+| Real time | Native WebRTC and WebSockets |
+| Backend | Python 3.12, FastAPI, Pydantic |
+| Data | SQLite, SQLAlchemy 2 |
+| Tests | Pytest, FastAPI TestClient |
+| Deployment | Vercel, Railway, Docker, GitHub Actions |
+
+## Database schema
+
+- `users`: default logged-in user, email and display metadata
+- `meetings`: meeting identifiers, secure invite/host tokens, schedule, options and lifecycle status
+- `meeting_participants`: display name, role, join/leave timestamps and removal state
+- `meeting_events`: auditable meeting creation, join, leave, cancellation and ending events
+
+Meeting IDs, invite tokens and user emails are uniquely indexed. Meeting, participant and event relationships use foreign keys.
+
+## Local setup
+
+### Prerequisites
+
+- Node.js 20.9+
+- Python 3.11+
+
+### Backend
+
+```bash
+cd backend
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+copy .env.example .env
+uvicorn app.main:app --reload
+```
+
+The API runs at `http://localhost:8000`; interactive OpenAPI documentation is at `http://localhost:8000/docs`.
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+copy .env.example .env.local
+npm run dev
+```
+
+Open `http://localhost:3000`.
+
+Alternatively, run the complete stack with `docker compose up --build`.
+
+## Tests
+
+```bash
+cd backend
+pytest -q
+
+cd ../frontend
+npm run build
+```
+
+## Deployment
+
+### Backend on Railway
+
+1. Create a Railway service from this repository and set its root directory to `/backend`.
+2. Attach a persistent volume at `/app/data`.
+3. Configure:
+   - `DATABASE_URL=sqlite:////app/data/zoom.db`
+   - `PUBLIC_FRONTEND_URL=https://<your-vercel-domain>`
+   - `FRONTEND_ORIGINS=https://<your-vercel-domain>`
+4. Generate a public Railway domain.
+
+SQLite requires a single backend replica. Horizontal scaling would require migrating the same SQLAlchemy models to PostgreSQL.
+
+### Frontend on Vercel
+
+1. Import this repository and set the root directory to `/frontend`.
+2. Configure:
+   - `NEXT_PUBLIC_API_URL=https://<your-railway-domain>`
+   - `NEXT_PUBLIC_WS_URL=wss://<your-railway-domain>`
+3. Deploy and update the Railway origin variables with the final Vercel domain.
+
+For reliable WebRTC behind restrictive networks, configure a TURN service using the optional `NEXT_PUBLIC_TURN_*` variables in `frontend/.env.example`.
+
+## Assumptions
+
+- A seeded default user, Kavya Gupta, is considered logged in as required by the brief.
+- Host credentials are stored only in the creator's browser. Public invite links do not expose host privileges.
+- Waiting-room preference is persisted for forward compatibility; the current version admits participants immediately.
+- Browser camera/screen APIs require HTTPS in deployment or localhost during development.
+
+## Interview notes
+
+The main separation of concerns is deliberate: pages own workflow state, the API module owns HTTP behavior, FastAPI routes validate transport data, services own meeting creation rules, SQLAlchemy models own persistence, and the real-time hub owns ephemeral socket connections. This keeps stored business data separate from transient WebRTC signaling state.

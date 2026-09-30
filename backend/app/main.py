@@ -152,6 +152,18 @@ async def meeting_socket(websocket: WebSocket, meeting_id: str, participant_id: 
                 client.muted = bool(message.get("muted"))
                 client.video_off = bool(message.get("videoOff"))
                 await hub.broadcast(meeting.meeting_id, {"type": "media-state", "participant": hub.public(client)}, exclude=participant_id)
+            elif message_type == "screen-share-state":
+                client.sharing = bool(message.get("sharing"))
+                await hub.broadcast(
+                    meeting.meeting_id,
+                    {
+                        "type": "screen-share-state",
+                        "participantId": participant_id,
+                        "name": client.name,
+                        "sharing": client.sharing,
+                    },
+                    exclude=participant_id,
+                )
             elif message_type == "remove" and role == "host" and message.get("target"):
                 await hub.send_to(meeting.meeting_id, message["target"], {"type": "removed"})
             elif message_type == "mute-all" and role == "host":
@@ -164,4 +176,3 @@ async def meeting_socket(websocket: WebSocket, meeting_id: str, participant_id: 
                 db.add(MeetingEvent(meeting_pk=record.meeting_pk, event_type="left", participant_id=participant_id))
                 db.commit()
         await hub.disconnect(meeting.meeting_id, participant_id)
-

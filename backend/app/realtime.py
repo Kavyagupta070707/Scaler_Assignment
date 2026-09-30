@@ -11,6 +11,7 @@ class Client:
     role: str
     muted: bool = False
     video_off: bool = False
+    sharing: bool = False
 
 
 class MeetingHub:
@@ -53,8 +54,8 @@ class MeetingHub:
             "role": client.role,
             "muted": client.muted,
             "videoOff": client.video_off,
+            "sharing": client.sharing,
         }
 
 
 hub = MeetingHub()
-

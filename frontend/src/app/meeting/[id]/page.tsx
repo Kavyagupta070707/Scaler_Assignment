@@ -28,6 +28,24 @@ function VideoTile({ participant, local = false }: { participant: Participant; l
   );
 }
 
+type SharedScreen = { participantId: string; name: string; stream: MediaStream };
+
+function ScreenStage({ screen }: { screen: SharedScreen }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.srcObject = screen.stream;
+      ref.current.play().catch(() => undefined);
+    }
+  }, [screen.stream]);
+  return (
+    <div className="screen-share-main">
+      <video ref={ref} autoPlay playsInline muted={screen.participantId === "local"} />
+      <div className="screen-share-label"><MonitorUp size={14} /> {screen.name}&apos;s screen</div>
+    </div>
+  );
+}
+
 export default function MeetingPage() {
   const id = String(useParams().id);
   const router = useRouter();
@@ -39,6 +57,7 @@ export default function MeetingPage() {
   const [muted, setMuted] = useState(false);
   const [videoOff, setVideoOff] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [sharedScreen, setSharedScreen] = useState<SharedScreen | null>(null);
   const [copied, setCopied] = useState(false);
   const [sidePanel, setSidePanel] = useState<"participants" | "info" | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -52,10 +71,14 @@ export default function MeetingPage() {
   const sharingRef = useRef(false);
   const socketRef = useRef<WebSocket | null>(null);
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const screenSendersRef = useRef<Map<string, RTCRtpSender>>(new Map());
+  const participantsRef = useRef<Participant[]>([]);
 
   const updateParticipant = useCallback((updated: Participant) => {
     setParticipants(current => current.map(item => item.id === updated.id ? { ...item, ...updated } : item));
   }, []);
+
+  useEffect(() => { participantsRef.current = participants; }, [participants]);
 
   useEffect(() => {
     async function prepare() {
@@ -97,17 +120,34 @@ export default function MeetingPage() {
     peer = new RTCPeerConnection({ iceServers });
     peersRef.current.set(target, peer);
     streamRef.current?.getAudioTracks().forEach(track => peer!.addTrack(track, streamRef.current!));
-    const outgoingVideoStream = screenStreamRef.current || streamRef.current;
-    const outgoingVideoTrack = outgoingVideoStream?.getVideoTracks()[0];
-    if (outgoingVideoTrack && outgoingVideoStream) peer.addTrack(outgoingVideoTrack, outgoingVideoStream);
+    const cameraTrack = streamRef.current?.getVideoTracks()[0];
+    if (cameraTrack && streamRef.current) peer.addTrack(cameraTrack, streamRef.current);
+    const activeScreen = screenStreamRef.current;
+    const screenTrack = activeScreen?.getVideoTracks()[0];
+    if (screenTrack && activeScreen) screenSendersRef.current.set(target, peer.addTrack(screenTrack, activeScreen));
     peer.onicecandidate = event => { if (event.candidate) socketRef.current?.send(JSON.stringify({ type: "signal", target, data: { candidate: event.candidate } })); };
-    peer.ontrack = event => setParticipants(current => current.map(item => item.id === target ? { ...item, stream: event.streams[0] } : item));
+    peer.ontrack = event => {
+      const incomingStream = event.streams[0] || new MediaStream([event.track]);
+      const isScreenTrack = event.track.kind === "video" && incomingStream.getAudioTracks().length === 0;
+      if (isScreenTrack) {
+        const participantName = participantsRef.current.find(item => item.id === target)?.name || "Participant";
+        setSharedScreen({ participantId: target, name: participantName, stream: incomingStream });
+        event.track.onended = () => setSharedScreen(current => current?.participantId === target ? null : current);
+      } else {
+        setParticipants(current => current.map(item => item.id === target ? { ...item, stream: incomingStream } : item));
+      }
+    };
     peer.onconnectionstatechange = () => { if (peer?.connectionState === "failed") peer.restartIce(); };
     if (initiator) {
-      const offer = await peer.createOffer(); await peer.setLocalDescription(offer);
-      socketRef.current?.send(JSON.stringify({ type: "signal", target, data: { description: peer.localDescription } }));
+      await negotiate(target, peer);
     }
     return peer;
+  }
+
+  async function negotiate(target: string, peer: RTCPeerConnection) {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    socketRef.current?.send(JSON.stringify({ type: "signal", target, data: { description: peer.localDescription } }));
   }
 
   async function handleSignal(from: string, data: { description?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) {
@@ -136,17 +176,35 @@ export default function MeetingPage() {
       socket.onopen = () => socket.send(JSON.stringify({ type: "media-state", muted, videoOff }));
       socket.onmessage = async event => {
         const message = JSON.parse(event.data);
-        if (message.type === "room-state") { setParticipants(message.participants); for (const participant of message.participants) await createPeer(participant.id, true); }
+        if (message.type === "room-state") {
+          participantsRef.current = message.participants;
+          setParticipants(message.participants);
+          for (const participant of message.participants) await createPeer(participant.id, true);
+        }
         if (message.type === "participant-joined") setParticipants(current => [...current.filter(item => item.id !== message.participant.id), message.participant]);
-        if (message.type === "participant-left") { setParticipants(current => current.filter(item => item.id !== message.participantId)); peersRef.current.get(message.participantId)?.close(); peersRef.current.delete(message.participantId); }
+        if (message.type === "participant-left") {
+          setParticipants(current => current.filter(item => item.id !== message.participantId));
+          setSharedScreen(current => current?.participantId === message.participantId ? null : current);
+          peersRef.current.get(message.participantId)?.close();
+          peersRef.current.delete(message.participantId);
+          screenSendersRef.current.delete(message.participantId);
+        }
         if (message.type === "signal") await handleSignal(message.from, message.data);
         if (message.type === "media-state") updateParticipant(message.participant);
+        if (message.type === "screen-share-state") {
+          setParticipants(current => current.map(item => item.id === message.participantId ? { ...item, sharing: message.sharing } : item));
+          if (!message.sharing) setSharedScreen(current => current?.participantId === message.participantId ? null : current);
+          else setSharedScreen(current => {
+            if (!current || current.participantId !== message.participantId) return current;
+            return { ...current, name: message.name };
+          });
+        }
         if (message.type === "mute-request") {
           streamRef.current?.getAudioTracks().forEach(track => { track.enabled = false; });
           mutedRef.current = true;
           setMuted(true);
           setLocalParticipant(current => current ? { ...current, muted: true } : current);
-          socket.send(JSON.stringify({ type: "media-state", muted: true, videoOff: sharingRef.current ? false : videoOffRef.current }));
+          socket.send(JSON.stringify({ type: "media-state", muted: true, videoOff: videoOffRef.current }));
         }
         if (message.type === "removed") { alert("The host removed you from the meeting."); leave(); }
         if (message.type === "meeting-ended") { alert("The host ended the meeting."); leave(); }
@@ -159,46 +217,46 @@ export default function MeetingPage() {
     videoOffRef.current = nextVideoOff;
     streamRef.current?.getAudioTracks().forEach(track => { track.enabled = !nextMuted; });
     streamRef.current?.getVideoTracks().forEach(track => { track.enabled = !nextVideoOff; });
-    const publishedVideoOff = sharingRef.current ? false : nextVideoOff;
-    setLocalParticipant(current => current ? { ...current, muted: nextMuted, videoOff: publishedVideoOff } : current);
-    socketRef.current?.send(JSON.stringify({ type: "media-state", muted: nextMuted, videoOff: publishedVideoOff }));
+    setLocalParticipant(current => current ? { ...current, muted: nextMuted, videoOff: nextVideoOff } : current);
+    socketRef.current?.send(JSON.stringify({ type: "media-state", muted: nextMuted, videoOff: nextVideoOff }));
   }
   function toggleMute() { const next = !muted; setMuted(next); publishMedia(next, videoOff); }
   function toggleVideo() { const next = !videoOff; setVideoOff(next); publishMedia(muted, next); }
 
-  function replaceOutgoingVideo(track: MediaStreamTrack | null) {
-    peersRef.current.forEach(peer => {
-      const sender = peer.getSenders().find(item => item.track?.kind === "video");
-      if (sender) sender.replaceTrack(track).catch(() => undefined);
-    });
-  }
-
-  function stopScreenShare() {
+  async function stopScreenShare() {
     const screenStream = screenStreamRef.current;
     screenStreamRef.current = null;
     sharingRef.current = false;
     screenStream?.getVideoTracks().forEach(track => { track.onended = null; track.stop(); });
-    replaceOutgoingVideo(cameraTrackRef.current);
-    setLocalParticipant(current => current ? {
-      ...current,
-      stream: streamRef.current || undefined,
-      videoOff: videoOffRef.current,
-    } : current);
-    socketRef.current?.send(JSON.stringify({ type: "media-state", muted: mutedRef.current, videoOff: videoOffRef.current }));
+    const negotiations: Promise<void>[] = [];
+    peersRef.current.forEach((peer, target) => {
+      const sender = screenSendersRef.current.get(target);
+      if (sender) peer.removeTrack(sender);
+      screenSendersRef.current.delete(target);
+      negotiations.push(negotiate(target, peer).catch(() => undefined));
+    });
+    await Promise.all(negotiations);
+    setSharedScreen(current => current?.participantId === localParticipant?.id ? null : current);
+    socketRef.current?.send(JSON.stringify({ type: "screen-share-state", sharing: false }));
     setSharing(false);
   }
 
   async function toggleShare() {
-    if (sharingRef.current) { stopScreenShare(); return; }
+    if (sharingRef.current) { await stopScreenShare(); return; }
     try {
       const display = await navigator.mediaDevices.getDisplayMedia({ video: true });
       const track = display.getVideoTracks()[0];
       screenStreamRef.current = display;
       sharingRef.current = true;
-      replaceOutgoingVideo(track);
-      setLocalParticipant(current => current ? { ...current, stream: display, videoOff: false } : current);
-      socketRef.current?.send(JSON.stringify({ type: "media-state", muted: mutedRef.current, videoOff: false }));
-      track.onended = stopScreenShare;
+      if (localParticipant) setSharedScreen({ participantId: localParticipant.id, name: localParticipant.name, stream: display });
+      const negotiations: Promise<void>[] = [];
+      peersRef.current.forEach((peer, target) => {
+        screenSendersRef.current.set(target, peer.addTrack(track, display));
+        negotiations.push(negotiate(target, peer));
+      });
+      await Promise.all(negotiations);
+      socketRef.current?.send(JSON.stringify({ type: "screen-share-state", sharing: true }));
+      track.onended = () => { void stopScreenShare(); };
       setSharing(true);
     } catch { /* user cancelled */ }
   }
@@ -221,9 +279,18 @@ export default function MeetingPage() {
         <button onClick={() => setSidePanel(sidePanel === "info" ? null : "info")}><Info size={18} /></button>
       </header>
       <section className={`meeting-stage ${sidePanel ? "panel-open" : ""}`}>
-        <div className={`video-grid count-${Math.min(allParticipants.length, 4)}`}>
-          {allParticipants.map(person => <VideoTile participant={person} local={person.id === localParticipant?.id} key={person.id} />)}
-        </div>
+        {sharedScreen ? (
+          <div className="screen-share-layout">
+            <ScreenStage screen={sharedScreen} />
+            <div className="video-filmstrip" aria-label="Participant videos">
+              {allParticipants.map(person => <VideoTile participant={person} local={person.id === localParticipant?.id} key={person.id} />)}
+            </div>
+          </div>
+        ) : (
+          <div className={`video-grid count-${Math.min(allParticipants.length, 4)}`}>
+            {allParticipants.map(person => <VideoTile participant={person} local={person.id === localParticipant?.id} key={person.id} />)}
+          </div>
+        )}
         {sidePanel && (
           <aside className="room-panel">
             <div className="panel-heading">

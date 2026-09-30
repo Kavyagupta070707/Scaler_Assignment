@@ -19,6 +19,6 @@ export type Participant = {
   role: "host" | "guest";
   muted: boolean;
   videoOff: boolean;
+  sharing?: boolean;
   stream?: MediaStream;
 };
-

@@ -136,19 +136,3 @@ For reliable WebRTC behind restrictive networks, configure a TURN service using 
 - Waiting-room admission state is held by the live meeting server; guests must be admitted by the host when the option is enabled.
 - Browser camera/screen APIs require HTTPS in deployment or localhost during development.
 
-## Interview notes
-
-The main separation of concerns is deliberate: pages own workflow state, the API module owns HTTP behavior, FastAPI routes validate transport data, services own meeting creation rules, SQLAlchemy models own persistence, and the real-time hub owns ephemeral socket connections. This keeps stored business data separate from transient WebRTC signaling state.
-
-The meeting UI uses a reusable `MeetingControls` component for the responsive desktop toolbar and mobile More sheet, while the meeting page coordinates browser media, WebRTC peers, and real-time state. Client-generated event IDs make chat and reaction rendering immediate without duplicating the server-confirmed event.
-
-## Evaluation coverage
-
-| Criterion | Implementation evidence |
-| --- | --- |
-| Functionality | Instant, join-by-ID/link, scheduling, WebRTC media, screen sharing, chat, reactions, waiting room, reconnection and host moderation |
-| UI/UX | Zoom-inspired dashboard, pre-join preview, dark meeting canvas, bottom toolbar, right-side panels, presentation filmstrip and mobile More sheet |
-| Database design | Indexed meeting identifiers, unique invite/host tokens, user-meeting relationships, participant history and an event audit trail with SQLite foreign keys enabled |
-| Code quality | Typed API boundary, Pydantic validation, explicit error states, production builds and backend integration tests |
-| Modularity | Pages, reusable components, API client, schemas, persistence models, business services and the WebSocket hub are separated by responsibility |
-| Code understanding | Architecture, assumptions, data lifecycle, deployment limits and scaling tradeoffs are documented above |

@@ -13,7 +13,12 @@ const iceServers: RTCIceServer[] = [
 
 function VideoTile({ participant, local = false }: { participant: Participant; local?: boolean }) {
   const ref = useRef<HTMLVideoElement>(null);
-  useEffect(() => { if (ref.current && participant.stream) ref.current.srcObject = participant.stream; }, [participant.stream]);
+  useEffect(() => {
+    if (ref.current && participant.stream && !participant.videoOff) {
+      ref.current.srcObject = participant.stream;
+      ref.current.play().catch(() => undefined);
+    }
+  }, [participant.stream, participant.videoOff]);
   const initials = participant.name.split(" ").map(word => word[0]).join("").slice(0, 2).toUpperCase();
   return (
     <div className="video-tile">
@@ -40,7 +45,11 @@ export default function MeetingPage() {
   const [localParticipant, setLocalParticipant] = useState<Participant | null>(null);
   const localVideo = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
   const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
+  const mutedRef = useRef(false);
+  const videoOffRef = useRef(false);
+  const sharingRef = useRef(false);
   const socketRef = useRef<WebSocket | null>(null);
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
 
@@ -57,20 +66,40 @@ export default function MeetingPage() {
           const media = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
           streamRef.current = media; cameraTrackRef.current = media.getVideoTracks()[0] || null;
           if (localVideo.current) localVideo.current.srcObject = media;
-        } catch { setVideoOff(true); setMuted(true); }
+        } catch {
+          videoOffRef.current = true;
+          mutedRef.current = true;
+          setVideoOff(true);
+          setMuted(true);
+        }
         setStage("preview");
       } catch (err) { setError(err instanceof Error ? err.message : "Meeting unavailable"); setStage("error"); }
     }
     prepare();
-    return () => { streamRef.current?.getTracks().forEach(track => track.stop()); socketRef.current?.close(); peersRef.current.forEach(peer => peer.close()); };
+    return () => {
+      screenStreamRef.current?.getTracks().forEach(track => track.stop());
+      streamRef.current?.getTracks().forEach(track => track.stop());
+      socketRef.current?.close();
+      peersRef.current.forEach(peer => peer.close());
+    };
   }, [id]);
+
+  useEffect(() => {
+    if (stage === "preview" && localVideo.current && streamRef.current && !videoOff) {
+      localVideo.current.srcObject = streamRef.current;
+      localVideo.current.play().catch(() => undefined);
+    }
+  }, [stage, videoOff]);
 
   async function createPeer(target: string, initiator: boolean) {
     let peer = peersRef.current.get(target);
     if (peer) return peer;
     peer = new RTCPeerConnection({ iceServers });
     peersRef.current.set(target, peer);
-    streamRef.current?.getTracks().forEach(track => peer!.addTrack(track, streamRef.current!));
+    streamRef.current?.getAudioTracks().forEach(track => peer!.addTrack(track, streamRef.current!));
+    const outgoingVideoStream = screenStreamRef.current || streamRef.current;
+    const outgoingVideoTrack = outgoingVideoStream?.getVideoTracks()[0];
+    if (outgoingVideoTrack && outgoingVideoStream) peer.addTrack(outgoingVideoTrack, outgoingVideoStream);
     peer.onicecandidate = event => { if (event.candidate) socketRef.current?.send(JSON.stringify({ type: "signal", target, data: { candidate: event.candidate } })); };
     peer.ontrack = event => setParticipants(current => current.map(item => item.id === target ? { ...item, stream: event.streams[0] } : item));
     peer.onconnectionstatechange = () => { if (peer?.connectionState === "failed") peer.restartIce(); };
@@ -114,9 +143,10 @@ export default function MeetingPage() {
         if (message.type === "media-state") updateParticipant(message.participant);
         if (message.type === "mute-request") {
           streamRef.current?.getAudioTracks().forEach(track => { track.enabled = false; });
+          mutedRef.current = true;
           setMuted(true);
           setLocalParticipant(current => current ? { ...current, muted: true } : current);
-          socket.send(JSON.stringify({ type: "media-state", muted: true, videoOff }));
+          socket.send(JSON.stringify({ type: "media-state", muted: true, videoOff: sharingRef.current ? false : videoOffRef.current }));
         }
         if (message.type === "removed") { alert("The host removed you from the meeting."); leave(); }
         if (message.type === "meeting-ended") { alert("The host ended the meeting."); leave(); }
@@ -125,28 +155,54 @@ export default function MeetingPage() {
   }
 
   function publishMedia(nextMuted: boolean, nextVideoOff: boolean) {
+    mutedRef.current = nextMuted;
+    videoOffRef.current = nextVideoOff;
     streamRef.current?.getAudioTracks().forEach(track => { track.enabled = !nextMuted; });
     streamRef.current?.getVideoTracks().forEach(track => { track.enabled = !nextVideoOff; });
-    setLocalParticipant(current => current ? { ...current, muted: nextMuted, videoOff: nextVideoOff } : current);
-    socketRef.current?.send(JSON.stringify({ type: "media-state", muted: nextMuted, videoOff: nextVideoOff }));
+    const publishedVideoOff = sharingRef.current ? false : nextVideoOff;
+    setLocalParticipant(current => current ? { ...current, muted: nextMuted, videoOff: publishedVideoOff } : current);
+    socketRef.current?.send(JSON.stringify({ type: "media-state", muted: nextMuted, videoOff: publishedVideoOff }));
   }
   function toggleMute() { const next = !muted; setMuted(next); publishMedia(next, videoOff); }
   function toggleVideo() { const next = !videoOff; setVideoOff(next); publishMedia(muted, next); }
+
+  function replaceOutgoingVideo(track: MediaStreamTrack | null) {
+    peersRef.current.forEach(peer => {
+      const sender = peer.getSenders().find(item => item.track?.kind === "video");
+      if (sender) sender.replaceTrack(track).catch(() => undefined);
+    });
+  }
+
+  function stopScreenShare() {
+    const screenStream = screenStreamRef.current;
+    screenStreamRef.current = null;
+    sharingRef.current = false;
+    screenStream?.getVideoTracks().forEach(track => { track.onended = null; track.stop(); });
+    replaceOutgoingVideo(cameraTrackRef.current);
+    setLocalParticipant(current => current ? {
+      ...current,
+      stream: streamRef.current || undefined,
+      videoOff: videoOffRef.current,
+    } : current);
+    socketRef.current?.send(JSON.stringify({ type: "media-state", muted: mutedRef.current, videoOff: videoOffRef.current }));
+    setSharing(false);
+  }
+
   async function toggleShare() {
-    if (sharing) { const camera = cameraTrackRef.current; if (camera) peersRef.current.forEach(peer => peer.getSenders().find(sender => sender.track?.kind === "video")?.replaceTrack(camera)); setSharing(false); return; }
+    if (sharingRef.current) { stopScreenShare(); return; }
     try {
       const display = await navigator.mediaDevices.getDisplayMedia({ video: true });
       const track = display.getVideoTracks()[0];
-      peersRef.current.forEach(peer => peer.getSenders().find(sender => sender.track?.kind === "video")?.replaceTrack(track));
-      track.onended = () => {
-        const camera = cameraTrackRef.current;
-        if (camera) peersRef.current.forEach(peer => peer.getSenders().find(sender => sender.track?.kind === "video")?.replaceTrack(camera));
-        setSharing(false);
-      };
+      screenStreamRef.current = display;
+      sharingRef.current = true;
+      replaceOutgoingVideo(track);
+      setLocalParticipant(current => current ? { ...current, stream: display, videoOff: false } : current);
+      socketRef.current?.send(JSON.stringify({ type: "media-state", muted: mutedRef.current, videoOff: false }));
+      track.onended = stopScreenShare;
       setSharing(true);
     } catch { /* user cancelled */ }
   }
-  function leave() { socketRef.current?.close(); streamRef.current?.getTracks().forEach(track => track.stop()); router.push("/"); }
+  function leave() { screenStreamRef.current?.getTracks().forEach(track => track.stop()); socketRef.current?.close(); streamRef.current?.getTracks().forEach(track => track.stop()); router.push("/"); }
   async function endForAll() { if (!meeting) return; const token = localStorage.getItem(`zoomly-host-${meeting.meeting_id}`); if (token) await api.end(meeting.meeting_id, token); leave(); }
   async function copyInvite() { if (!meeting) return; await navigator.clipboard.writeText(meeting.invite_url); setCopied(true); setTimeout(() => setCopied(false), 1800); }
 

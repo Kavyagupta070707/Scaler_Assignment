@@ -32,5 +32,8 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - run: pytest -q
+      - name: Run backend tests
+        run: python -m pytest -q
+        env:
+          PYTHONPATH: .
 

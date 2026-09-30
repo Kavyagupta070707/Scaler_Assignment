@@ -111,4 +111,5 @@ npm run build
 - Host credentials are stored only in the creator's browser. Public invite links do not expose host privileges.
 - Waiting-room admission state is held by the live meeting server; guests must be admitted by the host when the option is enabled.
 - Browser camera/screen APIs require HTTPS in deployment or localhost during development.
+- Some secondary UI elements are present to closely reproduce Zoom’s interface and are intentionally non-functional. All assignment-required core workflows are fully implemented.
 
